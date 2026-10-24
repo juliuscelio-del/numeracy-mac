@@ -1,0 +1,22 @@
+name: Build Mac app
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install -r requirements.txt
+      - run: >
+          python -m PyInstaller --noconfirm --windowed
+          --name "GNHS Numeracy Drill" --icon icon.icns main_desktop.py
+          --hidden-import numeracy_server --hidden-import logo_data --hidden-import app_core --hidden-import webview
+      - run: cd dist && ditto -c -k --sequesterRsrc --keepParent "GNHS Numeracy Drill.app" "GNHS-Numeracy-Drill-Mac.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mac-app
+          path: dist/GNHS-Numeracy-Drill-Mac.zip
