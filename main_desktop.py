@@ -1,5 +1,5 @@
 """Guadalupe NHS Numeracy Drill: desktop app (Windows + Mac).
-Opens a start screen: TEACHER (PIN, runs the drill for the class) or STUDENT (join with the teacher's address)."""
+Opens a start screen: TEACHER (PIN, runs the drill for the class) or STUDENT (joins the teacher automatically)."""
 import sys
 if "--webview" in sys.argv:
     # Child mode: show one page in a native app window (WebKit on Mac, Edge WebView2 on Windows), then exit.
@@ -40,6 +40,60 @@ def make_qr(text):
     return getattr(img, "get_image", lambda: img)().convert("RGB")
 
 
+def sweep_subnet(timeout=0.3):
+    """Fallback when the broadcast is blocked (Windows firewall, some routers): ask every computer on the
+    same network directly whether the drill is running on ports 8000-8009. Only outgoing connections are
+    used, so no firewall permission is needed on the student laptop."""
+    import socket, json
+    from concurrent.futures import ThreadPoolExecutor
+    from urllib.request import urlopen
+    mine = []
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        mine.append(s.getsockname()[0])
+        s.close()
+    except Exception:
+        pass
+    try:
+        mine += socket.gethostbyname_ex(socket.gethostname())[2]
+    except Exception:
+        pass
+    bases = []
+    for ip in mine:
+        p = ip.split(".")
+        if len(p) == 4 and not ip.startswith("127.") and not ip.startswith("169.254."):
+            b = ".".join(p[:3])
+            if b not in bases:
+                bases.append(b)
+    targets = [("%s.%d" % (b, h), port) for b in bases for h in range(1, 255) for port in range(core.DEFAULT_PORT, core.DEFAULT_PORT + 10)]
+
+    def probe(t):
+        ip, port = t
+        try:
+            c = socket.create_connection((ip, port), timeout=timeout)
+            c.close()
+        except Exception:
+            return None
+        try:
+            j = json.loads(urlopen("http://%s:%d/api/t/boot" % (ip, port), timeout=1.5).read().decode("utf-8", "replace"))
+            if "boot" in j:                      # only our drill server answers this
+                return ("Teacher (%s)" % ip, "http://%s:%d" % (ip, port))
+        except Exception:
+            pass
+        return None
+
+    out = []
+    try:
+        with ThreadPoolExecutor(max_workers=120) as ex:
+            for r in ex.map(probe, targets):
+                if r and r not in out:
+                    out.append(r)
+    except Exception:
+        pass
+    return out
+
+
 class App:
     def __init__(self):
         self.root = tk.Tk()
@@ -50,6 +104,7 @@ class App:
         self.host = None
         self.pages = []
         self.logo_small = None
+        self._scan_token = None      # identifies the student screen that is currently searching
         if LOGO_PNG:
             try:
                 pil = Image.open(io.BytesIO(LOGO_PNG)).convert("RGBA")
@@ -76,6 +131,7 @@ class App:
             webbrowser.open(url)
 
     def clear(self):
+        self._scan_token = None      # leaving a screen stops any search that was running on it
         if self.body is not None:
             self.body.destroy()
         self.body = tk.Frame(self.root, bg=BG)
@@ -112,51 +168,80 @@ class App:
         self.label(b, "Who is using this app?", 17, INK, True).pack(pady=(18, 12))
         self.button(b, "I am the TEACHER (PIN)", BLUE, self.teacher_screen).pack(pady=6)
         self.button(b, "I am a STUDENT", GREEN, self.student_screen).pack(pady=6)
-        self.label(b, "Teacher: runs the drill for the class.\nStudent: joins the teacher's drill.", 11, MUTED).pack(pady=(14, 4))
+        self.label(b, "Teacher: runs the drill for the class.\nStudent: joins the teacher's drill automatically.", 11, MUTED).pack(pady=(14, 4))
 
     def student_screen(self):
         b = self.clear()
+        token = object()
+        self._scan_token = token
+        state = {"joined": False}
+
         self.label(b, "Join the teacher's drill", 17, INK, True).pack(pady=(16, 4))
-        status = self.label(b, "Searching for your teacher...", 12, MUTED)
+        status = self.label(b, "Looking for your teacher...", 12, MUTED)
         status.pack()
         found = tk.Frame(b, bg=BG)
         found.pack(pady=6)
 
-        def join_url(url):
-            self.open_page(url, "Numeracy Drill - Student")
+        def active():
+            return self._scan_token is token
 
-        def show(res):
+        def join_url(url, name=""):
+            state["joined"] = True
             try:
                 for w in found.winfo_children():
                     w.destroy()
-                if res:
-                    status.config(text="Tap your teacher to join:")
+                status.config(text="Joined %s. If you closed the window, press Search again." % (name or "your teacher"))
+            except tk.TclError:
+                pass
+            self.open_page(url, "Numeracy Drill - Student")
+
+        def show(res):
+            if not active() or state["joined"]:
+                return
+            try:
+                for w in found.winfo_children():
+                    w.destroy()
+                if len(res) == 1:
+                    name, url = res[0]
+                    status.config(text="Found %s. Joining..." % name)
+                    join_url(url, name)                       # ONE teacher open: join without any tap
+                elif res:
+                    status.config(text="Several teachers are open. Tap yours:")
                     for name, url in res:
                         self.button(found, "%s  (%s)" % (name, url.replace("http://", "")), GREEN,
-                                    lambda u=url: join_url(u), width=34).pack(pady=3)
+                                    lambda u=url, n=name: join_url(u, n), width=34).pack(pady=3)
                 else:
-                    status.config(text="No teacher found yet. Same Wi-Fi? Try again, or type the address below.")
+                    status.config(text="Looking for your teacher... (waiting for the teacher to open the drill)")
+                    self.root.after(300, scan)                 # keep searching until the teacher opens it
             except tk.TclError:
                 pass
 
         def scan():
-            try:
-                for w in found.winfo_children():
-                    w.destroy()
-                status.config(text="Searching for your teacher...")
-            except tk.TclError:
+            if not active() or state["joined"]:
                 return
 
             def work():
-                res = core.discover(4.0)
+                res = core.discover(2.0)
+                if not res:
+                    res = sweep_subnet()              # broadcast heard nothing: ask the computers directly
                 try:
                     self.root.after(0, lambda: show(res))
                 except Exception:
                     pass
             threading.Thread(target=work, daemon=True).start()
 
-        self.button(b, "Search again", BLUE, scan, width=16).pack(pady=(4, 10))
-        self.label(b, "Or type the address shown on the teacher's screen:", 11, MUTED).pack()
+        def search_again():
+            state["joined"] = False
+            try:
+                for w in found.winfo_children():
+                    w.destroy()
+                status.config(text="Looking for your teacher...")
+            except tk.TclError:
+                return
+            scan()
+
+        self.button(b, "Search again", BLUE, search_again, width=16).pack(pady=(4, 10))
+        self.label(b, "Not finding it? Type the address shown on the teacher's screen:", 11, MUTED).pack()
         e = self.entry(b, width=26)
         e.insert(0, "192.168.")
         e.pack(pady=6)
@@ -246,7 +331,7 @@ class App:
         nu = self.host.name_url()
         if nu:
             self.label(b, "or (does not change): " + nu, 11, MUTED).pack(pady=(2, 0))
-        self.label(b, "Students can also tap 'Find my teacher' in their app: no address needed.", 10, MUTED).pack(pady=(4, 0))
+        self.label(b, "Student laptops join automatically: no address needed.", 10, MUTED).pack(pady=(4, 0))
         self.label(b, "Your data is saved in:\n%s" % core.default_data_dir(), 9, MUTED).pack(pady=(8, 8))
         self.button(b, "Open TEACHER dashboard", BLUE, lambda: self.open_page(self.host.teacher_url(), "Numeracy Drill - Teacher")).pack(pady=4)
         self.button(b, "Open Pre / Post test (teacher)", PURPLE, lambda: self.open_page(self.host.test_url(), "Pre / Post test - Teacher")).pack(pady=4)
@@ -254,6 +339,7 @@ class App:
         self.open_page(self.host.teacher_url(), "Numeracy Drill - Teacher")
 
     def quit(self):
+        self._scan_token = None
         if self.host is not None:
             if not messagebox.askyesno(core.APP_NAME, "Stop the drill for the students and close?"):
                 return
