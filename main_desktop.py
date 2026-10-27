@@ -17,10 +17,11 @@ if "--webview" in sys.argv:
 
 import io, os, subprocess, threading, base64, webbrowser
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from PIL import Image, ImageTk
 
 import app_core as core
+import app_updater
 
 try:
     from logo_data import LOGO_B64
@@ -29,6 +30,136 @@ except Exception:
     LOGO_PNG = None
 
 BG, BLUE, INK, MUTED, RED, GREEN, PURPLE = "#e4f1ff", "#2f6df6", "#12306b", "#5f78a8", "#ff5a5f", "#1fc76a", "#8b5cf6"
+
+# ---- update popup (same look and wording as the GNHS Quiz app)
+GREEN_D, GREEN_L, WARN, CARD = "#2e7d32", "#66bb6a", "#ef6c00", "#f0f9f2"
+CHECKING_TITLE = "paabot kadali....mangita tag update..."
+UPTODATE_TITLE = "Okie pa ag version. Updated pa ne. Padajun gamit"
+UP_TO_DATE_MS, NOTICE_MS = 10000, 4000
+
+
+class Popup:
+    """A centered card shown over the app window. One card at a time."""
+
+    def __init__(self, root):
+        self.root = root
+        self.win = None
+        self.msg = None
+        self.pbar = None
+        self._timer = None
+
+    def close(self):
+        if self._timer is not None:
+            try:
+                self.root.after_cancel(self._timer)
+            except Exception:
+                pass
+            self._timer = None
+        if self.win is not None:
+            try:
+                self.win.destroy()
+            except Exception:
+                pass
+        self.win = self.msg = self.pbar = None
+
+    def _click(self, b):
+        self.close()
+        if b.get("onClick"):
+            b["onClick"]()
+
+    def set_progress(self, pct, text=None):
+        if self.pbar is not None and str(self.pbar.cget("mode")) == "determinate":
+            self.pbar["value"] = pct
+        if self.msg is not None and text:
+            self.msg.config(text=text)
+
+    def show(self, title, message=None, icon="check", spinner=False, progress=False, buttons=(), auto_ms=0):
+        self.close()
+        w = tk.Toplevel(self.root)
+        self.win = w
+        w.title("Update")
+        w.configure(bg=CARD)
+        w.resizable(False, False)
+        w.protocol("WM_DELETE_WINDOW", self.close)
+        try:
+            w.transient(self.root)
+        except Exception:
+            pass
+        tk.Frame(w, bg=GREEN_D, height=6).pack(fill="x")
+        body = tk.Frame(w, bg=CARD)
+        body.pack(padx=34, pady=(20, 26))
+
+        if spinner or progress:
+            self.pbar = ttk.Progressbar(body, length=210, maximum=100,
+                                        mode="determinate" if progress else "indeterminate")
+            self.pbar.pack(pady=(6, 18))
+            if not progress:
+                self.pbar.start(12)
+        else:
+            c = tk.Canvas(body, width=68, height=68, bg=CARD, highlightthickness=0)
+            c.pack(pady=(0, 12))
+            c.create_oval(2, 2, 66, 66, fill=WARN if icon == "alert" else GREEN_D, outline="")
+            kw = dict(fill="white", width=5, capstyle=tk.ROUND, joinstyle=tk.ROUND)
+            if icon == "download":
+                c.create_line(34, 16, 34, 42, **kw)
+                c.create_line(22, 32, 34, 44, 46, 32, **kw)
+                c.create_line(20, 53, 48, 53, **kw)
+            elif icon == "alert":
+                c.create_line(34, 18, 34, 38, **kw)
+                c.create_oval(31, 45, 37, 51, fill="white", outline="")
+            else:
+                c.create_line(20, 36, 30, 46, 48, 24, **kw)
+
+        tk.Label(body, text=title, font=("Helvetica", 15, "bold"), fg="#1b4332", bg=CARD,
+                 wraplength=290, justify="center").pack()
+        if message:
+            self.msg = tk.Label(body, text=message, font=("Helvetica", 12), fg="#5b6b61", bg=CARD,
+                                wraplength=290, justify="center")
+            self.msg.pack(pady=(8, 0))
+
+        if buttons:
+            row = tk.Frame(body, bg=CARD)
+            row.pack(pady=(18, 0))
+            for b in buttons:
+                prim = bool(b.get("primary"))
+                lab = tk.Label(row, text=b["label"], font=("Helvetica", 13, "bold"),
+                               fg="white" if prim else "#2e5d3a", bg=GREEN_D if prim else "white",
+                               padx=20, pady=8, cursor="hand2",
+                               highlightthickness=1, highlightbackground=GREEN_D if prim else "#cfe3d4")
+                lab.pack(side="left", padx=5)
+                lab.bind("<Button-1>", lambda e, b=b: self._click(b))
+
+        x = tk.Label(w, text="\u00d7", font=("Helvetica", 20), fg="#8a9a8f", bg=CARD, cursor="hand2")
+        x.place(relx=1.0, x=-12, y=8, anchor="ne")
+        x.bind("<Button-1>", lambda e: self.close())
+
+        if auto_ms:
+            bar = tk.Frame(w, bg=GREEN_L)
+            bar.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0, height=5)
+            steps = max(1, auto_ms // 100)
+
+            def tick(i=0):
+                if self.win is not w:
+                    return
+                if i >= steps:
+                    self.close()
+                    return
+                bar.place_configure(relwidth=1.0 - i / float(steps))
+                self._timer = self.root.after(100, lambda: tick(i + 1))
+            tick()
+
+        w.update_idletasks()
+        try:
+            px = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_reqwidth()) // 2
+            py = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_reqheight()) // 2
+            w.geometry("+%d+%d" % (max(px, 0), max(py, 0)))
+        except Exception:
+            pass
+        try:
+            w.lift()
+            w.attributes("-topmost", True)
+        except Exception:
+            pass
 
 
 def make_qr(text):
@@ -105,6 +236,7 @@ class App:
         self.pages = []
         self.logo_small = None
         self._scan_token = None      # identifies the student screen that is currently searching
+        self.popup = Popup(self.root)
         if LOGO_PNG:
             try:
                 pil = Image.open(io.BytesIO(LOGO_PNG)).convert("RGBA")
@@ -116,7 +248,92 @@ class App:
         self.body = None
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self.home()
+        self.root.after(700, self.update_flow)       # update popup every time the app opens
         self.root.mainloop()
+
+    # ---------- updates
+    def update_flow(self):
+        pop = self.popup
+        pop.show(CHECKING_TITLE, spinner=True)
+
+        def work():
+            try:
+                res = (None, app_updater.latest_release())
+            except app_updater.UpdateError as e:
+                res = (e, None)
+            except Exception as e:
+                res = (app_updater.UpdateError("error", str(e)), None)
+            try:
+                self.root.after(0, lambda: self._update_result(res))
+            except Exception:
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_result(self, res):
+        pop = self.popup
+        err, rel = res
+        cur = app_updater.VERSION
+        if err is not None:
+            if err.kind == "offline":
+                pop.show("No internet connection",
+                         "The app works offline. It will check again next time you open the app.",
+                         icon="alert", auto_ms=NOTICE_MS)
+            elif err.kind == "rate":
+                pop.show("Couldn't check for updates", "Too many checks right now. Try again in a little while.",
+                         icon="alert", auto_ms=NOTICE_MS)
+            else:
+                pop.show("Couldn't check for updates", "Check your internet connection.",
+                         icon="alert", auto_ms=NOTICE_MS)
+            return
+        if not rel:
+            pop.show(UPTODATE_TITLE, icon="check", auto_ms=UP_TO_DATE_MS)
+            return
+        latest = str(rel.get("tag_name") or "").lstrip("vV")
+        asset = app_updater.find_asset(rel)
+        if asset and app_updater.is_newer(latest, cur):
+            pop.show("Update",
+                     "Pislita ag update basin naa Updated na App (v%s \u2192 v%s)" % (cur, latest),
+                     icon="download",
+                     buttons=[{"label": "Later"},
+                              {"label": "Update", "primary": True,
+                               "onClick": lambda: self._update_download(rel, asset)}])
+        else:
+            pop.show(UPTODATE_TITLE, icon="check", auto_ms=UP_TO_DATE_MS)
+
+    def _update_download(self, rel, asset):
+        pop = self.popup
+        page = rel.get("html_url") or app_updater.RELEASES_PAGE
+        if not app_updater.can_install():
+            webbrowser.open(page)        # running from source, or the app's folder is read-only
+            return
+        pop.show("Update", "Nag-download\u2026 0%", progress=True)
+
+        def prog(done, total):
+            pct = int(done * 100 / total) if total else 0
+            try:
+                self.root.after(0, lambda: pop.set_progress(pct, "Nag-download\u2026 %d%%" % pct))
+            except Exception:
+                pass
+
+        def failed():
+            pop.show("Couldn't update", "Open the download page and install the new version yourself.",
+                     icon="alert",
+                     buttons=[{"label": "Later"},
+                              {"label": "Open page", "primary": True, "onClick": lambda: webbrowser.open(page)}])
+
+        def work():
+            try:
+                dest = app_updater.download_target()
+                app_updater.download(asset["browser_download_url"], dest, prog)
+                self.root.after(0, lambda: pop.show("Update", "Nag-install ug nag-restart ang app\u2026 hulat kadali.", spinner=True))
+                app_updater.install(dest)
+                self.root.after(800, lambda: self.quit(force=True))
+            except Exception:
+                try:
+                    self.root.after(0, failed)
+                except Exception:
+                    pass
+        threading.Thread(target=work, daemon=True).start()
 
     # ---------- helpers
     def open_page(self, url, title="Numeracy Drill"):
@@ -169,6 +386,7 @@ class App:
         self.button(b, "I am the TEACHER (PIN)", BLUE, self.teacher_screen).pack(pady=6)
         self.button(b, "I am a STUDENT", GREEN, self.student_screen).pack(pady=6)
         self.label(b, "Teacher: runs the drill for the class.\nStudent: joins the teacher's drill automatically.", 11, MUTED).pack(pady=(14, 4))
+        self.label(b, "Version %s" % app_updater.VERSION, 10, MUTED).pack(pady=(6, 0))
 
     def student_screen(self):
         b = self.clear()
@@ -338,10 +556,10 @@ class App:
         self.button(b, "Stop and close", RED, self.quit).pack(pady=(10, 4))
         self.open_page(self.host.teacher_url(), "Numeracy Drill - Teacher")
 
-    def quit(self):
+    def quit(self, force=False):
         self._scan_token = None
         if self.host is not None:
-            if not messagebox.askyesno(core.APP_NAME, "Stop the drill for the students and close?"):
+            if not force and not messagebox.askyesno(core.APP_NAME, "Stop the drill for the students and close?"):
                 return
             self.host.stop()
         for p in self.pages:

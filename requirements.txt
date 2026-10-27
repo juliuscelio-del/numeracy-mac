@@ -2,3 +2,4 @@ pillow
 qrcode
 pyinstaller
 pywebview
+certifi
