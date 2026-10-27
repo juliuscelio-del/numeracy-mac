@@ -35,7 +35,7 @@ BG, BLUE, INK, MUTED, RED, GREEN, PURPLE = "#e4f1ff", "#2f6df6", "#12306b", "#5f
 GREEN_D, GREEN_L, WARN, CARD = "#2e7d32", "#66bb6a", "#ef6c00", "#f0f9f2"
 CHECKING_TITLE = "paabot kadali....mangita tag update..."
 UPTODATE_TITLE = "Okie pa ag version. Updated pa ne. Padajun gamit"
-UP_TO_DATE_MS, NOTICE_MS = 10000, 4000
+UP_TO_DATE_MS, NOTICE_MS = 15000, 4000
 
 
 class Popup:
