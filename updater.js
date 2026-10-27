@@ -1,5 +1,6 @@
 /* GNHS Quiz — Student app updater
    Shows the update popup EVERY time the app opens, whether or not there is an update.
+   FORCED UPDATE: the popup has no "X" close button and no "Later" button.
    - Android: checks GitHub Releases for a newer APK (also when the app returns
      from the background and internet comes back).
    - Windows: shows the status reported by electron-updater (see preload.js / main.js).
@@ -32,8 +33,6 @@
   #gnhs-upd .card:before{content:"";position:absolute;top:0;left:0;right:0;height:6px;\
     background:linear-gradient(90deg,#2e7d32,#66bb6a,#2e7d32)}\
   @keyframes gu-pop{from{opacity:0;transform:scale(.93) translateY(10px)}to{opacity:1;transform:none}}\
-  #gnhs-upd .x{position:absolute;top:12px;right:14px;width:30px;height:30px;border:none;border-radius:50%;\
-    background:transparent;color:#8a9a8f;font-size:20px;line-height:30px;padding:0;cursor:pointer}\
   #gnhs-upd .icon{width:68px;height:68px;border-radius:50%;margin:0 auto 14px;display:flex;align-items:center;\
     justify-content:center;background:linear-gradient(135deg,#43a047,#2e7d32);box-shadow:0 8px 20px rgba(46,125,50,.35)}\
   #gnhs-upd .icon.warn{background:linear-gradient(135deg,#ffa726,#ef6c00);box-shadow:0 8px 20px rgba(239,108,0,.35)}\
@@ -84,11 +83,7 @@
     var card = document.createElement('div');
     card.className = 'card';
 
-    var x = document.createElement('button');
-    x.className = 'x';
-    x.innerHTML = '&times;';
-    x.onclick = closePopup;
-    card.appendChild(x);
+    // NOTE: no "X" close button on purpose (forced update).
 
     var top = document.createElement('div');
     if (opts.spinner) {
@@ -131,6 +126,9 @@
       closeTimer = setTimeout(closePopup, autoCloseMs);
     }
 
+    // Tapping the dark background does nothing
+    overlay.addEventListener('click', function (e) { e.stopPropagation(); });
+
     overlay.appendChild(card);
     document.body.appendChild(overlay);
   }
@@ -168,12 +166,12 @@
           progressShown = true;
         }
       } else if (s.state === 'downloaded') {
+        // FORCED: only "Restart now", no "Later"
         show({
           title: 'Update',
-          message: 'Na-download na ang v' + s.version + '. I-restart ang app para ma-install, o ma-install gihapon inig close sa app.',
+          message: 'Na-download na ang v' + s.version + '. I-restart ang app para ma-install.',
           icon: 'download',
           buttons: [
-            { label: 'Later' },
             { label: 'Restart now', primary: true, onClick: function () { D.install(); } }
           ]
         });
@@ -253,12 +251,12 @@
       var apk = (release.assets || []).filter(function (a) { return /\.apk$/i.test(a.name); })[0];
 
       if (apk && isNewer(latest, current)) {
+        // FORCED: only the "Update" button, no "Later"
         show({
           title: 'Update',
           message: 'Pislita ag update basin naa Updated na App (v' + current + ' \u2192 v' + latest + ')',
           icon: 'download',
           buttons: [
-            { label: 'Later' },
             { label: 'Update', primary: true, onClick: function () { openUrl(apk.browser_download_url); } }
           ]
         });

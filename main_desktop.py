@@ -39,7 +39,9 @@ UP_TO_DATE_MS, NOTICE_MS = 15000, 4000
 
 
 class Popup:
-    """A centered card shown over the app window. One card at a time."""
+    """A centered card shown over the app window. One card at a time.
+    By default the card is LOCKED: no X button, the window's own close button is disabled,
+    and the main window cannot be clicked until the card closes (timer or button)."""
 
     def __init__(self, root):
         self.root = root
@@ -57,6 +59,10 @@ class Popup:
             self._timer = None
         if self.win is not None:
             try:
+                self.win.grab_release()
+            except Exception:
+                pass
+            try:
                 self.win.destroy()
             except Exception:
                 pass
@@ -73,14 +79,15 @@ class Popup:
         if self.msg is not None and text:
             self.msg.config(text=text)
 
-    def show(self, title, message=None, icon="check", spinner=False, progress=False, buttons=(), auto_ms=0):
+    def show(self, title, message=None, icon="check", spinner=False, progress=False, buttons=(), auto_ms=0, lock=True):
         self.close()
         w = tk.Toplevel(self.root)
         self.win = w
         w.title("Update")
         w.configure(bg=CARD)
         w.resizable(False, False)
-        w.protocol("WM_DELETE_WINDOW", self.close)
+        # locked: the window's own close button does nothing
+        w.protocol("WM_DELETE_WINDOW", (lambda: None) if lock else self.close)
         try:
             w.transient(self.root)
         except Exception:
@@ -129,9 +136,11 @@ class Popup:
                 lab.pack(side="left", padx=5)
                 lab.bind("<Button-1>", lambda e, b=b: self._click(b))
 
-        x = tk.Label(w, text="\u00d7", font=("Helvetica", 20), fg="#8a9a8f", bg=CARD, cursor="hand2")
-        x.place(relx=1.0, x=-12, y=8, anchor="ne")
-        x.bind("<Button-1>", lambda e: self.close())
+        # The X button only exists when the popup is NOT locked
+        if not lock:
+            x = tk.Label(w, text="\u00d7", font=("Helvetica", 20), fg="#8a9a8f", bg=CARD, cursor="hand2")
+            x.place(relx=1.0, x=-12, y=8, anchor="ne")
+            x.bind("<Button-1>", lambda e: self.close())
 
         if auto_ms:
             bar = tk.Frame(w, bg=GREEN_L)
@@ -160,6 +169,14 @@ class Popup:
             w.attributes("-topmost", True)
         except Exception:
             pass
+        # locked: block all clicks on the main window until this card closes
+        if lock:
+            try:
+                w.update()
+                w.grab_set()
+                w.focus_force()
+            except Exception:
+                pass
 
 
 def make_qr(text):
@@ -291,11 +308,11 @@ class App:
         latest = str(rel.get("tag_name") or "").lstrip("vV")
         asset = app_updater.find_asset(rel)
         if asset and app_updater.is_newer(latest, cur):
+            # FORCED update: only the Update button, no "Later", no X
             pop.show("Update",
                      "Pislita ag update basin naa Updated na App (v%s \u2192 v%s)" % (cur, latest),
                      icon="download",
-                     buttons=[{"label": "Later"},
-                              {"label": "Update", "primary": True,
+                     buttons=[{"label": "Update", "primary": True,
                                "onClick": lambda: self._update_download(rel, asset)}])
         else:
             pop.show(UPTODATE_TITLE, icon="check", auto_ms=UP_TO_DATE_MS)
@@ -316,9 +333,10 @@ class App:
                 pass
 
         def failed():
+            # no "Later": the student can retry or open the download page
             pop.show("Couldn't update", "Open the download page and install the new version yourself.",
                      icon="alert",
-                     buttons=[{"label": "Later"},
+                     buttons=[{"label": "Retry", "onClick": lambda: self._update_download(rel, asset)},
                               {"label": "Open page", "primary": True, "onClick": lambda: webbrowser.open(page)}])
 
         def work():
