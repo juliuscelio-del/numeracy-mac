@@ -11,7 +11,11 @@ if "--webview" in sys.argv:
         webview.settings["ALLOW_DOWNLOADS"] = True   # PDF / report downloads
     except Exception:
         pass
-    webview.create_window(_title, _url, width=1200, height=820, min_size=(700, 500), text_select=True)
+    try:
+        webview.create_window(_title, _url, width=1200, height=820, min_size=(700, 500), text_select=True,
+                              maximized=True)       # open filling the whole screen
+    except TypeError:                               # older pywebview without 'maximized'
+        webview.create_window(_title, _url, width=1200, height=820, min_size=(700, 500), text_select=True)
     webview.start()
     sys.exit(0)
 
@@ -168,12 +172,10 @@ class Popup:
 
         w.update_idletasks()
         try:
-            self.root.update_idletasks()
-            rw, rh = self.root.winfo_width(), self.root.winfo_height()
-            if rw < 100 or rh < 100:                 # main window not laid out yet: use its requested size
-                rw, rh = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
-            px = self.root.winfo_rootx() + (rw - w.winfo_reqwidth()) // 2
-            py = self.root.winfo_rooty() + (rh - w.winfo_reqheight()) // 2
+            # center on the SCREEN: the app window is centered too, and on slow laptops the main window
+            # may not be on screen yet when this popup opens (its position would read as 0,0)
+            px = (w.winfo_screenwidth() - w.winfo_reqwidth()) // 2
+            py = (w.winfo_screenheight() - w.winfo_reqheight()) // 2
             w.geometry("+%d+%d" % (max(px, 0), max(py, 0)))
         except Exception:
             pass
