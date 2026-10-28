@@ -79,8 +79,10 @@ INK_T, MUTED_T = "#12306b", "#5f78a8"
 
 class Popup:
     """A centered, colorful card shown over the app window. One card at a time.
-    By default the card is LOCKED: no X button, no title bar, the window's own close button is disabled,
-    and the main window cannot be clicked until the card closes (timer or button)."""
+    By default the card is LOCKED: no X button, the window's own close button is disabled,
+    and the main window cannot be clicked until the card closes (timer or button).
+    On Mac the title bar is removed completely. On Windows the title bar is kept (borderless
+    windows with a grab can leave the main window without keyboard focus), but closing is disabled."""
     W = 380
 
     def __init__(self, root):
@@ -108,10 +110,27 @@ class Popup:
             except Exception:
                 pass
             try:
+                self.win.attributes("-topmost", False)   # don't leave a stuck topmost window on Windows
+            except Exception:
+                pass
+            try:
                 self.win.destroy()
             except Exception:
                 pass
         self.win = self.msg = self.pbar = self._cover = None
+        # give keyboard focus back to the main window (Windows can leave it with nothing focused)
+        try:
+            self.root.after(30, self._refocus)
+        except Exception:
+            pass
+
+    def _refocus(self):
+        try:
+            if self.win is None:
+                self.root.lift()
+                self.root.focus_force()
+        except Exception:
+            pass
 
     def _click(self, b):
         self.close()
@@ -151,16 +170,14 @@ class Popup:
         w.title("Update")
         w.configure(bg=c1)                       # the 2px frame around the card takes the theme color
         w.resizable(False, False)
-        # locked: remove the title bar completely so no X / close button is visible at all
-        if lock:
+        # locked on Mac: remove the title bar completely so no X / close button is visible at all.
+        # (Not done on Windows: overrideredirect + grab left the main window unable to take keyboard input.)
+        if lock and sys.platform == "darwin":
             try:
-                if sys.platform.startswith("win"):
-                    w.overrideredirect(True)
-                elif sys.platform == "darwin":
-                    w.tk.call("::tk::unsupported::MacWindowStyle", "style", w._w, "plain", "none")
+                w.tk.call("::tk::unsupported::MacWindowStyle", "style", w._w, "plain", "none")
             except Exception:
                 pass
-        # locked: the window's own close button does nothing (backup in case the title bar stays)
+        # locked: the window's own close button does nothing
         w.protocol("WM_DELETE_WINDOW", (lambda: None) if lock else self.close)
         try:
             w.transient(self.root)
@@ -265,8 +282,9 @@ class Popup:
         w.update_idletasks()
 
         def place():
-            # Center on the SCREEN. Give the full size AND position: a window without a title bar
-            # (overrideredirect) on Windows ignores a bare "+x+y" and lands in the top-left corner.
+            # Center on the SCREEN. Give the full size AND position.
+            if self.win is not w:
+                return
             try:
                 ww, hh = w.winfo_reqwidth(), w.winfo_reqheight()
                 px = max((w.winfo_screenwidth() - ww) // 2, 0)
@@ -551,7 +569,12 @@ class App:
     def button(self, parent, text, color, cmd, width=26):
         b = tk.Label(parent, text=text, font=("Helvetica", 14, "bold"), fg="white", bg=color,
                      padx=18, pady=10, cursor="hand2", width=width)
-        b.bind("<Button-1>", lambda e: cmd())
+
+        def click(e):
+            if self.popup.win is not None:      # a popup is still on screen: ignore the click
+                return
+            cmd()
+        b.bind("<Button-1>", click)
         return b
 
     def label(self, parent, text, size=12, color=INK, bold=False, mono=False):
@@ -561,6 +584,8 @@ class App:
     def entry(self, parent, show=None, width=22):
         e = tk.Entry(parent, font=("Helvetica", 16), width=width, justify="center", show=show,
                      relief="solid", bd=2)
+        # clicking the box always pulls keyboard focus into it (Windows can leave focus elsewhere)
+        e.bind("<Button-1>", lambda ev: (self.root.focus_force(), e.focus_force()))
         return e
 
     # ---------- screens
@@ -679,7 +704,8 @@ class App:
             self.label(b, "First time: choose a PIN (at least 4 characters).\nYou will use it to open the teacher dashboard.", 11, MUTED).pack(pady=(0, 8))
         e1 = self.entry(b, show="*")
         e1.pack(pady=4)
-        e1.focus_set()
+        # force keyboard focus into the PIN box (Windows may not give it automatically)
+        self.root.after(150, lambda: (self.root.focus_force(), e1.focus_force()))
         e2 = None
         if first:
             self.label(b, "Type it again:", 11, MUTED).pack()
