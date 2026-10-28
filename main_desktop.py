@@ -22,6 +22,7 @@ if "--webview" in sys.argv:
 import io, os, subprocess, threading, base64, webbrowser
 import tkinter as tk
 from tkinter import messagebox, ttk
+from tkinter import font as tkfont
 from PIL import Image, ImageTk
 
 import app_core as core
@@ -42,25 +43,65 @@ UPTODATE_TITLE = "Okie pa ag version. Updated pa ne. Padajun gamit"
 UP_TO_DATE_MS, NOTICE_MS = 15000, 4000
 
 
+# ---- update popup look: colorful gradient card
+def _rgb(c):
+    return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def _mix(c1, c2, t):
+    a, b = _rgb(c1), _rgb(c2)
+    return "#%02x%02x%02x" % tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+def _gradient(cv, x0, y0, x1, y1, c1, c2):
+    """Left-to-right color gradient drawn as thin strips."""
+    span = max(1, x1 - x0)
+    for x in range(0, span, 2):
+        cv.create_rectangle(x0 + x, y0, x0 + x + 2, y1, fill=_mix(c1, c2, x / float(span)), outline="")
+
+
+def _round_rect(cv, x0, y0, x1, y1, r, **kw):
+    pts = [x0 + r, y0, x0 + r, y0, x1 - r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y0 + r, x1, y1 - r,
+           x1, y1 - r, x1, y1, x1 - r, y1, x1 - r, y1, x0 + r, y1, x0 + r, y1, x0, y1, x0, y1 - r,
+           x0, y1 - r, x0, y0 + r, x0, y0 + r, x0, y0]
+    return cv.create_polygon(pts, smooth=True, **kw)
+
+
+# kind -> (gradient start, gradient end, accent color)
+THEMES = {
+    "check":    ("#11998e", "#38ef7d", "#19b36b"),   # green / mint: all good
+    "download": ("#2f6df6", "#8b5cf6", "#4f6df0"),   # blue / purple: update available
+    "alert":    ("#ff9a3c", "#ff5a5f", "#ff6b4a"),   # orange / coral: problem
+    "spin":     ("#36d1dc", "#5b86e5", "#3f8fe0"),   # cyan / blue: searching
+}
+INK_T, MUTED_T = "#12306b", "#5f78a8"
+
+
 class Popup:
-    """A centered card shown over the app window. One card at a time.
-    By default the card is LOCKED: no X button, the window's own close button is disabled,
+    """A centered, colorful card shown over the app window. One card at a time.
+    By default the card is LOCKED: no X button, no title bar, the window's own close button is disabled,
     and the main window cannot be clicked until the card closes (timer or button)."""
+    W = 380
 
     def __init__(self, root):
         self.root = root
         self.win = None
         self.msg = None
         self.pbar = None
+        self._cover = None
+        self._pw = 0
         self._timer = None
+        self._anim = None
 
     def close(self):
-        if self._timer is not None:
-            try:
-                self.root.after_cancel(self._timer)
-            except Exception:
-                pass
-            self._timer = None
+        for attr in ("_timer", "_anim"):
+            t = getattr(self, attr)
+            if t is not None:
+                try:
+                    self.root.after_cancel(t)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
         if self.win is not None:
             try:
                 self.win.grab_release()
@@ -70,7 +111,7 @@ class Popup:
                 self.win.destroy()
             except Exception:
                 pass
-        self.win = self.msg = self.pbar = None
+        self.win = self.msg = self.pbar = self._cover = None
 
     def _click(self, b):
         self.close()
@@ -78,17 +119,37 @@ class Popup:
             b["onClick"]()
 
     def set_progress(self, pct, text=None):
-        if self.pbar is not None and str(self.pbar.cget("mode")) == "determinate":
-            self.pbar["value"] = pct
+        if self.pbar is not None and self._cover is not None:
+            pct = max(0, min(100, pct))
+            try:
+                self.pbar.coords(self._cover, int(self._pw * pct / 100.0), 0, self._pw, 14)
+            except tk.TclError:
+                pass
         if self.msg is not None and text:
             self.msg.config(text=text)
 
+    def _button(self, parent, b, accent):
+        prim = bool(b.get("primary"))
+        font = tkfont.Font(root=self.root, family="Helvetica", size=12, weight="bold")
+        bw, bh = font.measure(b["label"]) + 60, 42
+        cv = tk.Canvas(parent, width=bw + 4, height=bh + 4, bg="white", highlightthickness=0, cursor="hand2")
+        base = accent if prim else "white"
+        hover = _mix(accent, "#000000", 0.14) if prim else _mix(accent, "#ffffff", 0.88)
+        shape = _round_rect(cv, 2, 2, bw + 2, bh + 2, 20, fill=base, outline=accent, width=2)
+        cv.create_text((bw + 4) // 2, (bh + 4) // 2, text=b["label"], font=font, fill="white" if prim else accent)
+        cv.bind("<Enter>", lambda e: cv.itemconfigure(shape, fill=hover))
+        cv.bind("<Leave>", lambda e: cv.itemconfigure(shape, fill=base))
+        cv.bind("<Button-1>", lambda e: self._click(b))
+        return cv
+
     def show(self, title, message=None, icon="check", spinner=False, progress=False, buttons=(), auto_ms=0, lock=True):
         self.close()
+        kind = "spin" if spinner else ("download" if progress else icon)
+        c1, c2, accent = THEMES.get(kind, THEMES["check"])
         w = tk.Toplevel(self.root)
         self.win = w
         w.title("Update")
-        w.configure(bg=CARD)
+        w.configure(bg=c1)                       # the 2px frame around the card takes the theme color
         w.resizable(False, False)
         # locked: remove the title bar completely so no X / close button is visible at all
         if lock:
@@ -105,59 +166,78 @@ class Popup:
             w.transient(self.root)
         except Exception:
             pass
-        tk.Frame(w, bg=GREEN_D, height=6).pack(fill="x")
-        body = tk.Frame(w, bg=CARD)
-        body.pack(padx=34, pady=(20, 26))
 
-        if spinner or progress:
-            self.pbar = ttk.Progressbar(body, length=210, maximum=100,
-                                        mode="determinate" if progress else "indeterminate")
-            self.pbar.pack(pady=(6, 18))
-            if not progress:
-                self.pbar.start(12)
+        CW = self.W - 4
+        card = tk.Frame(w, bg="white")
+        card.pack(padx=2, pady=2)
+
+        # ---- gradient header with the round icon badge
+        BH, R = 84, 36
+        H = BH + R + 14
+        cv = tk.Canvas(card, width=CW, height=H, bg="white", highlightthickness=0)
+        cv.pack()
+        _gradient(cv, 0, 0, CW, BH, c1, c2)
+        cv.create_oval(-40, -55, 80, 45, fill=_mix(c1, "#ffffff", 0.22), outline="")
+        cv.create_oval(CW - 120, -10, CW + 40, 120, fill=_mix(c2, "#ffffff", 0.2), outline="")
+        cv.create_oval(CW // 2 - 40, -70, CW // 2 + 60, 20, fill=_mix(c1, c2, 0.5), outline="")
+        cv.create_rectangle(0, BH, CW, H, fill="white", outline="")       # clip the decoration to the banner
+        cx, cy = CW // 2, BH
+        cv.create_oval(cx - R - 9, cy - R - 4, cx + R + 9, cy + R + 12, fill="#e9eef7", outline="")   # soft shadow
+        cv.create_oval(cx - R - 6, cy - R - 6, cx + R + 6, cy + R + 6, fill="white", outline="")      # white ring
+        arc = None
+        if kind == "spin":
+            cv.create_oval(cx - R + 8, cy - R + 8, cx + R - 8, cy + R - 8, outline="#dfe9fb", width=6)
+            arc = cv.create_arc(cx - R + 8, cy - R + 8, cx + R - 8, cy + R - 8, start=90, extent=110,
+                                style="arc", outline=accent, width=6)
         else:
-            c = tk.Canvas(body, width=68, height=68, bg=CARD, highlightthickness=0)
-            c.pack(pady=(0, 12))
-            c.create_oval(2, 2, 66, 66, fill=WARN if icon == "alert" else GREEN_D, outline="")
-            kw = dict(fill="white", width=5, capstyle=tk.ROUND, joinstyle=tk.ROUND)
-            if icon == "download":
-                c.create_line(34, 16, 34, 42, **kw)
-                c.create_line(22, 32, 34, 44, 46, 32, **kw)
-                c.create_line(20, 53, 48, 53, **kw)
-            elif icon == "alert":
-                c.create_line(34, 18, 34, 38, **kw)
-                c.create_oval(31, 45, 37, 51, fill="white", outline="")
+            cv.create_oval(cx - R, cy - R, cx + R, cy + R, fill=accent, outline="")
+            kw = dict(fill="white", width=6, capstyle=tk.ROUND, joinstyle=tk.ROUND)
+            if kind == "download":
+                cv.create_line(cx, cy - 17, cx, cy + 8, **kw)
+                cv.create_line(cx - 12, cy - 2, cx, cy + 10, cx + 12, cy - 2, **kw)
+                cv.create_line(cx - 15, cy + 19, cx + 15, cy + 19, **kw)
+            elif kind == "alert":
+                cv.create_line(cx, cy - 17, cx, cy + 4, **kw)
+                cv.create_oval(cx - 4, cy + 11, cx + 4, cy + 19, fill="white", outline="")
             else:
-                c.create_line(20, 36, 30, 46, 48, 24, **kw)
+                cv.create_line(cx - 15, cy + 1, cx - 5, cy + 11, cx + 15, cy - 10, **kw)
+        if not lock:                                                       # the X only exists when NOT locked
+            cv.create_text(CW - 18, 16, text="\u00d7", fill="white", font=("Helvetica", 20, "bold"), tags="x")
+            cv.tag_bind("x", "<Button-1>", lambda e: self.close())
+            cv.configure(cursor="arrow")
 
-        tk.Label(body, text=title, font=("Helvetica", 15, "bold"), fg="#1b4332", bg=CARD,
-                 wraplength=290, justify="center").pack()
+        # ---- text
+        tk.Label(card, text=title, font=("Helvetica", 15, "bold"), fg=INK_T, bg="white",
+                 wraplength=CW - 64, justify="center").pack(padx=32, pady=(8, 0))
         if message:
-            self.msg = tk.Label(body, text=message, font=("Helvetica", 12), fg="#5b6b61", bg=CARD,
-                                wraplength=290, justify="center")
-            self.msg.pack(pady=(8, 0))
+            self.msg = tk.Label(card, text=message, font=("Helvetica", 12), fg=MUTED_T, bg="white",
+                                wraplength=CW - 64, justify="center")
+            self.msg.pack(padx=32, pady=(8, 0))
 
+        # ---- colorful progress bar (download)
+        if progress:
+            self._pw = CW - 90
+            bar = tk.Canvas(card, width=self._pw, height=14, bg="white", highlightthickness=0)
+            bar.pack(pady=(16, 0))
+            _gradient(bar, 0, 0, self._pw, 14, c1, c2)
+            self._cover = bar.create_rectangle(0, 0, self._pw, 14, fill="#e6ecfa", outline="")
+            self.pbar = bar
+
+        # ---- buttons
         if buttons:
-            row = tk.Frame(body, bg=CARD)
+            row = tk.Frame(card, bg="white")
             row.pack(pady=(18, 0))
             for b in buttons:
-                prim = bool(b.get("primary"))
-                lab = tk.Label(row, text=b["label"], font=("Helvetica", 13, "bold"),
-                               fg="white" if prim else "#2e5d3a", bg=GREEN_D if prim else "white",
-                               padx=20, pady=8, cursor="hand2",
-                               highlightthickness=1, highlightbackground=GREEN_D if prim else "#cfe3d4")
-                lab.pack(side="left", padx=5)
-                lab.bind("<Button-1>", lambda e, b=b: self._click(b))
+                self._button(row, b, accent).pack(side="left", padx=6)
 
-        # The X button only exists when the popup is NOT locked
-        if not lock:
-            x = tk.Label(w, text="\u00d7", font=("Helvetica", 20), fg="#8a9a8f", bg=CARD, cursor="hand2")
-            x.place(relx=1.0, x=-12, y=8, anchor="ne")
-            x.bind("<Button-1>", lambda e: self.close())
+        tk.Frame(card, bg="white", height=24).pack()
 
+        # ---- auto-close countdown strip (gradient that shrinks)
         if auto_ms:
-            bar = tk.Frame(w, bg=GREEN_L)
-            bar.place(relx=0, rely=1.0, anchor="sw", relwidth=1.0, height=5)
+            cb = tk.Canvas(card, width=CW, height=7, bg="white", highlightthickness=0)
+            cb.pack()
+            _gradient(cb, 0, 0, CW, 7, c1, c2)
+            cover = cb.create_rectangle(CW, 0, CW, 7, fill="white", outline="")
             steps = max(1, auto_ms // 100)
 
             def tick(i=0):
@@ -166,28 +246,51 @@ class Popup:
                 if i >= steps:
                     self.close()
                     return
-                bar.place_configure(relwidth=1.0 - i / float(steps))
+                cb.coords(cover, int(CW * (1.0 - i / float(steps))), 0, CW, 7)
                 self._timer = self.root.after(100, lambda: tick(i + 1))
             tick()
 
+        # ---- spinning ring while searching
+        if arc is not None:
+            def spin(a=90):
+                if self.win is not w:
+                    return
+                try:
+                    cv.itemconfigure(arc, start=a)
+                except tk.TclError:
+                    return
+                self._anim = self.root.after(35, lambda: spin((a - 16) % 360))
+            spin()
+
         w.update_idletasks()
-        try:
-            # center on the SCREEN: the app window is centered too, and on slow laptops the main window
-            # may not be on screen yet when this popup opens (its position would read as 0,0)
-            px = (w.winfo_screenwidth() - w.winfo_reqwidth()) // 2
-            py = (w.winfo_screenheight() - w.winfo_reqheight()) // 2
-            w.geometry("+%d+%d" % (max(px, 0), max(py, 0)))
-        except Exception:
-            pass
+
+        def place():
+            # Center on the SCREEN. Give the full size AND position: a window without a title bar
+            # (overrideredirect) on Windows ignores a bare "+x+y" and lands in the top-left corner.
+            try:
+                ww, hh = w.winfo_reqwidth(), w.winfo_reqheight()
+                px = max((w.winfo_screenwidth() - ww) // 2, 0)
+                py = max((w.winfo_screenheight() - hh) // 2, 0)
+                w.geometry("%dx%d+%d+%d" % (ww, hh, px, py))
+            except Exception:
+                pass
+        place()
         try:
             w.lift()
             w.attributes("-topmost", True)
+        except Exception:
+            pass
+        # re-apply once the window is really on screen (Windows may reset it while mapping)
+        try:
+            w.after(30, place)
+            w.after(250, place)
         except Exception:
             pass
         # locked: block all clicks on the main window until this card closes
         if lock:
             try:
                 w.update()
+                place()                               # window is on screen now: set the centered position again
                 w.grab_set()
                 w.focus_force()
             except Exception:
