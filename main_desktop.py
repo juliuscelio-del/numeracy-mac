@@ -86,7 +86,16 @@ class Popup:
         w.title("Update")
         w.configure(bg=CARD)
         w.resizable(False, False)
-        # locked: the window's own close button does nothing
+        # locked: remove the title bar completely so no X / close button is visible at all
+        if lock:
+            try:
+                if sys.platform.startswith("win"):
+                    w.overrideredirect(True)
+                elif sys.platform == "darwin":
+                    w.tk.call("::tk::unsupported::MacWindowStyle", "style", w._w, "plain", "none")
+            except Exception:
+                pass
+        # locked: the window's own close button does nothing (backup in case the title bar stays)
         w.protocol("WM_DELETE_WINDOW", (lambda: None) if lock else self.close)
         try:
             w.transient(self.root)
@@ -159,8 +168,12 @@ class Popup:
 
         w.update_idletasks()
         try:
-            px = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_reqwidth()) // 2
-            py = self.root.winfo_rooty() + (self.root.winfo_height() - w.winfo_reqheight()) // 2
+            self.root.update_idletasks()
+            rw, rh = self.root.winfo_width(), self.root.winfo_height()
+            if rw < 100 or rh < 100:                 # main window not laid out yet: use its requested size
+                rw, rh = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
+            px = self.root.winfo_rootx() + (rw - w.winfo_reqwidth()) // 2
+            py = self.root.winfo_rooty() + (rh - w.winfo_reqheight()) // 2
             w.geometry("+%d+%d" % (max(px, 0), max(py, 0)))
         except Exception:
             pass
@@ -265,6 +278,7 @@ class App:
         self.body = None
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
         self.home()
+        self.center_root()                            # open in the middle of the screen
         self.root.after(700, self.update_flow)       # update popup every time the app opens
         self.root.mainloop()
 
@@ -365,7 +379,51 @@ class App:
         except Exception:
             webbrowser.open(url)
 
+    def open_student_page(self, url, title="Numeracy Drill"):
+        """Student: the drill REPLACES the app window (one window on screen, not two).
+        The start window is hidden while the drill is open and comes back when the drill window is closed."""
+        try:
+            import webview  # noqa: F401  (only to check it is installed)
+            cmd = [sys.executable]
+            if not getattr(sys, "frozen", False):
+                cmd.append(os.path.abspath(__file__))
+            proc = subprocess.Popen(cmd + ["--webview", url, title])
+        except Exception:
+            webbrowser.open(url)
+            return
+        self.pages.append(proc)
+        self.popup.close()
+        self.root.withdraw()                          # hide the start window while the drill is open
+
+        def watch():
+            if proc.poll() is None:
+                self.root.after(500, watch)
+                return
+            try:
+                self.pages.remove(proc)
+            except ValueError:
+                pass
+            try:
+                self.root.deiconify()                 # drill closed: bring the start window back
+                self.home()
+                self.center_root()
+            except tk.TclError:
+                pass
+        watch()
+
+    def center_root(self):
+        """Put the app window in the middle of the screen."""
+        try:
+            self.root.update_idletasks()
+            w, h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
+            x = (self.root.winfo_screenwidth() - w) // 2
+            y = (self.root.winfo_screenheight() - h) // 2 - 20
+            self.root.geometry("+%d+%d" % (max(x, 0), max(y, 0)))
+        except Exception:
+            pass
+
     def clear(self):
+        self.root.after_idle(self.center_root)     # keep the window centered when the screen changes size
         self._scan_token = None      # leaving a screen stops any search that was running on it
         if self.body is not None:
             self.body.destroy()
@@ -429,7 +487,7 @@ class App:
                 status.config(text="Joined %s. If you closed the window, press Search again." % (name or "your teacher"))
             except tk.TclError:
                 pass
-            self.open_page(url, "Numeracy Drill - Student")
+            self.open_student_page(url, "Numeracy Drill - Student")
 
         def show(res):
             if not active() or state["joined"]:

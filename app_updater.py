@@ -1,14 +1,23 @@
-"""GNHS Numeracy Drill: self-updater (GitHub Releases). No GUI code in this file."""
-import os, sys, json, ssl, subprocess, tempfile
-from urllib.request import Request, urlopen
+"""GNHS Numeracy Drill: self-updater (GitHub Releases). No GUI code in this file.
+
+The update check does NOT use the GitHub API (which allows only 60 requests per hour per IP, so a whole
+school on one Wi-Fi hits the limit). Instead it reads the redirect of the public 'latest release' page,
+which carries the newest tag, and builds the download links from the fixed file names."""
+import os, sys, ssl, subprocess, tempfile
+from urllib.request import Request, urlopen, build_opener, HTTPRedirectHandler, HTTPSHandler
 from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, unquote
 
 REPO = "juliuscelio-del/numeracy-mac"
-API = "https://api.github.com/repos/%s/releases/latest" % REPO
 RELEASES_PAGE = "https://github.com/%s/releases/latest" % REPO
+DOWNLOAD_BASE = "https://github.com/%s/releases/download" % REPO
+
+# file names the GitHub build uploads to every release
+WIN_FILE = "GNHS-Numeracy-Drill.exe"
+MAC_FILE = "GNHS-Numeracy-Drill-Mac.dmg"
 
 try:
-    from app_version import VERSION          # written by the GitHub build (1.0.<build number>)
+    from app_version import VERSION          # written by the GitHub build (1.1.<build number>)
 except Exception:
     VERSION = "0.0.0"
 
@@ -33,17 +42,37 @@ def _ctx():
 
 def _open(url, timeout, api=True):
     headers = {"User-Agent": "GNHS-Numeracy-Updater"}
-    if api:
-        headers["Accept"] = "application/vnd.github+json"
     return urlopen(Request(url, headers=headers), timeout=timeout, context=_ctx())
 
 
+class _NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None                           # do not follow: we only want the Location header
+
+
 def latest_release(timeout=8):
-    """Returns the latest release (dict), or None if no release exists yet."""
+    """Returns the latest release as a dict (tag_name, html_url, assets), or None if no release exists yet.
+    Uses the public release page, not the rate-limited API."""
+    opener = build_opener(_NoRedirect, HTTPSHandler(context=_ctx()))
+    req = Request(RELEASES_PAGE, headers={"User-Agent": "GNHS-Numeracy-Updater"})
     try:
-        with _open(API, timeout) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
+        opener.open(req, timeout=timeout).close()
+        return None                           # answered without a redirect: no release yet
     except HTTPError as e:
+        if e.code in (301, 302, 303, 307, 308):
+            loc = urljoin(RELEASES_PAGE, e.headers.get("Location", "") or "")
+            if "/releases/tag/" not in loc:
+                return None                   # redirected to the releases list: nothing published yet
+            tag = unquote(loc.rstrip("/").split("/")[-1])
+            base = "%s/%s/" % (DOWNLOAD_BASE, tag)
+            return {
+                "tag_name": tag,
+                "html_url": loc,
+                "assets": [
+                    {"name": WIN_FILE, "browser_download_url": base + WIN_FILE},
+                    {"name": MAC_FILE, "browser_download_url": base + MAC_FILE},
+                ],
+            }
         if e.code == 404:
             return None
         if e.code in (403, 429):
