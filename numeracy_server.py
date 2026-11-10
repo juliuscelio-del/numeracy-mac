@@ -182,6 +182,7 @@ RIDS = set()   # (client id, request id) of submits already applied, so a retry 
 CLAIM = {}   # (section, roster name) -> client id that joined with it; cleared on every server start
 CLAIM_TTL = 120   # a claimed name is freed if that device has not been seen for this many seconds
 def is_roster(sec, name): return sec in ROSTER and name in ROSTER[sec]
+KICK = set()   # devices (cid) the teacher kicked: their next poll tells the page to log out
 def live_set():
     # (section, name) of students whose device has been seen in the last 8 seconds = present
     now = time.time(); return {(D['secs'].get(c), D['names'].get(c)) for c, t in SEEN.items() if now - t < 8}
@@ -1996,6 +1997,13 @@ def host_action(a, d):
         for q in D['rp'].get('picks', []):
             if q['sec'] == sec: q['mark'] = None
         check_finished(True)
+    elif a == 'kick':
+        # teacher kicks an online student: they are logged out at once, the name is freed and they may join again immediately
+        sec_ = str(d.get('sec', ''))[:60]; nm_ = str(d.get('name', ''))[:60]
+        for c_ in [c for c in list(D['names']) if D['names'].get(c) == nm_ and D['secs'].get(c) == sec_]:
+            KICK.add(c_); D['names'].pop(c_, None); D['secs'].pop(c_, None); SEEN.pop(c_, None)
+        CLAIM.pop((sec_, nm_), None); TB.clear()
+        D['notice'] = '\u23cf %s was kicked (can log in again)' % nm_; D['noticet'] = time.time()
     elif a == 'onlyon': D['onlyon'] = bool(d['v']) if 'v' in d else not D.get('onlyon', False)
     elif a == 'rcount': D['rcount'] = max(1, min(13, int(float(d.get('v') or 1))))   # up to 13 students at once
     elif a == 'rtime':
@@ -2121,6 +2129,7 @@ def vote(d):
     s = cur(); cid = str(d.get('cid', ''))[:40]; v = str(d.get('v', '')).strip()[:200]
     nm = str(d.get('name', '')).strip()[:40]
     sc0 = str(d.get('sec', ''))[:40]
+    if cid in KICK: return
     if cid and nm and not is_roster(sc0, nm): return   # roster names only, no nicknames
     if cid and nm and claimed_other(sc0, nm, cid): return
     if cid and nm: D['names'][cid] = nm; D['secs'][cid] = sc0; SEEN[cid] = time.time(); claim(sc0, nm, cid)
@@ -2246,6 +2255,8 @@ class H(BaseHTTPRequestHandler):
             cid = q.get('cid', [''])[0]; nm = q.get('name', [''])[0].strip()[:40]
             legacy = bool(cid) and 'v' not in q   # a student page opened before this server start (older code, no version marker)
             with lock:
+                if cid in KICK:
+                    KICK.discard(cid); self.send(json.dumps({'kicked': True})); return
                 if legacy:
                     r = state(False, '')
                     r['slide'] = dict(r['slide'], q='🔄 The session was restarted. Please refresh this page to join again.', type='open', opts=[], rev=False, turn='', log=[], votes={}, words={}, answers=[])
@@ -2957,7 +2968,11 @@ let TSEQ=0,TAPP=0;
 async function getState(){const my=++TSEQ,ac=new AbortController(),to=setTimeout(()=>ac.abort(),7000);
  try{const r=await fetch('/api/state?v=2&cid='+cid+'&name='+encodeURIComponent(nm)+'&sec='+encodeURIComponent(sc),{signal:ac.signal});if(!r.ok)throw 0;const J=await r.json();
   if(my<TAPP)return null;TAPP=my;return J}finally{clearTimeout(to)}}   /* an older reply never overwrites a newer one */
-async function tick(){try{{const J=await getState();if(!J)return;S=J}net(0);window.N=S.respondents;tmr(S);bossdraw(S.boss);
+async function tick(){try{{const J=await getState();if(!J)return;
+  if(J.kicked){nm='';sc='';mine={};window.nick=0;shown=null;try{localStorage.nm='';localStorage.sc=''}catch(x){}
+   if(!S){location.reload();return}
+   build();$('app').insertAdjacentHTML('afterbegin','<p class="big">\u26a0\ufe0f Your teacher logged you out. Choose your name to join again.</p>');return}
+  S=J}net(0);window.N=S.respondents;tmr(S);bossdraw(S.boss);
  {const bb=S.boss,bi=bb&&bb.bno?bb.bno:0,pst=window.PBS;window.PBS=bb?bb.st:null;
   if(pst==='fight'&&(!bb||bb.st==='idle')&&nm&&!window.rld){window.rld=1;location.reload();return}   /* teacher stopped the battle: refresh so nothing stays locked */
   if(window.PBI===undefined)window.PBI=bi;
@@ -3691,7 +3706,7 @@ function bysec(S){if(!S.bysec)return;const R=S.roster,sec=R.section,x=S.bysec.fi
  const G=S.goal,o=new Set(x.out||[]),on=new Set(x.on),N=S.noisy||{},sel=new Set(R.rp.show?R.rp.picks.map(q=>q.name):[]);
  const hu=n=>[...n].reduce((a,c)=>(a*31+c.charCodeAt(0))%360,7),tot=x.total||0,pct=tot?Math.round(100*x.on.length/tot):0;
  const card=n=>{const c=o.has(n)?'fin':on.has(n)?'on':'off',nz=N[sec+'|'+n],H=hu(n),S=sel.has(n);
-  return '<div class="'+c+(S?' sel':'')+'"><i class="av" style="--h:'+H+';--h2:'+((H+45)%360)+'">'+esc((n.trim().charAt(0)||'?').toUpperCase())+'</i><strong class="tx"><b>'+esc(n)+'</b>'+(S||c=='fin'?'<em>'+(S?'Selected':'🏁 Goal reached')+'</em>':'')+'</strong><s class=\"dt '+(on.has(n)?'g':'r')+'\" title=\"'+(on.has(n)?'Online':'Offline')+'\"></s>'+(G?'<u class="sc">'+((x.cnt||{})[n]||0)+'/'+G+'</u>':'')+(nz?'<u class="nz">🔇'+nz+'</u>':'')+'</div>'};
+  return '<div class="'+c+(S?' sel':'')+'"><i class="av" style="--h:'+H+';--h2:'+((H+45)%360)+'">'+esc((n.trim().charAt(0)||'?').toUpperCase())+'</i><strong class="tx"><b>'+esc(n)+'</b>'+(S||c=='fin'?'<em>'+(S?'Selected':'🏁 Goal reached')+'</em>':'')+'</strong><s class=\"dt '+(on.has(n)?'g':'r')+'\" title=\"'+(on.has(n)?'Online':'Offline')+'\"></s>'+(G?'<u class="sc">'+((x.cnt||{})[n]||0)+'/'+G+'</u>':'')+(nz?'<u class="nz">🔇'+nz+'</u>':'')+(on.has(n)?'<u class="kk" data-n="'+esc(n)+'" title="Kick this student (they can log in again)">\u23cf Kick</u>':'')+'</div>'};
  const f=window.bfl||'all',q=(window.bq||'').toLowerCase();
  const vis=R.names.filter(n=>{const c=o.has(n)?'fin':on.has(n)?'on':'off';return (f=='all'||(f=='on'?on.has(n):f=='off'?!on.has(n):f==c))&&(!q||n.toLowerCase().includes(q))});
  const grp=(t,cls,arr,e)=>'<div class="gh '+cls+'"><span>'+t+'</span><b>'+arr.length+'</b></div>'+(arr.length?'<div class="nm">'+arr.map(card).join('')+'</div>':'<div class="ge">'+(q?'No student matches your search.':e)+'</div>');
@@ -4055,6 +4070,9 @@ function rosDraw(){const box=$('rostv');if(!box||!st)return;const R=RSD||{},ks=O
   if(rep&&!confirm('Replace the whole list of "'+RSS+'" ('+L.length+' now) with these '+names.length+' names?\n\nStudents who are not in the new list leave the class list; their saved results are kept.'))return;
   await rsApi('paste',{sec:RSS,names:names,mode:rep?'replace':'add'});rosDraw();poll()};
  rosList();rosPv();rosMsg()}
+{const s=document.createElement('style');s.textContent='#bysec .kk{order:2;flex:none;cursor:pointer;text-decoration:none;padding:4px 11px;border-radius:99px;font-size:13px;font-weight:800;background:rgba(239,68,68,.14);color:#dc2626}#bysec .kk:hover{background:#dc2626;color:#fff}';document.head.appendChild(s)}
+document.addEventListener('click',async e=>{const k=e.target.closest&&e.target.closest('#bysec .kk');if(!k)return;e.stopPropagation();const n=k.dataset.n;
+ if(!confirm('Kick '+n+'?\n\nThey are logged out now and can log in again right away.'))return;await api('kick',{sec:st.roster.section,name:n})});
 poll();setInterval(poll,1000);</script></body></html>"""
 
 if not SPEED_WEIGHTED: HOST = HOST.replace(' (a faster answer hits harder)', '')
