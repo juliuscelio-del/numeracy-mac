@@ -103,4 +103,4 @@ jobs:
           gh release create "v$VERSION" files/* --repo "$REPO" \
             --title "GNHS Numeracy Drill v$VERSION" \
             --notes "Windows: GNHS-Numeracy-Drill.exe  |  Mac: GNHS-Numeracy-Drill-Mac.dmg" \
-            --latest
+            --latest------------this is the build yml i used
