@@ -12,9 +12,15 @@ REPO = "juliuscelio-del/numeracy-mac"
 RELEASES_PAGE = "https://github.com/%s/releases/latest" % REPO
 DOWNLOAD_BASE = "https://github.com/%s/releases/download" % REPO
 
-# file names the GitHub build uploads to every release
-WIN_FILE = "GNHS-Numeracy-Drill.exe"
-MAC_FILE = "GNHS-Numeracy-Drill-Mac.dmg"
+try:
+    from app_role import ROLE                # "teacher" or "student" (written by the build)
+except Exception:
+    ROLE = "teacher"
+
+# file names the GitHub build uploads to every release (one pair per app, each app updates only itself)
+_WHO = "Student" if ROLE == "student" else "Teacher"
+WIN_FILE = "GNHS-Numeracy-%s.exe" % _WHO
+MAC_FILE = "GNHS-Numeracy-%s-Mac.dmg" % _WHO
 
 try:
     from app_version import VERSION          # written by the GitHub build (1.1.<build number>)

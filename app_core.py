@@ -1,5 +1,6 @@
 """Shared by the desktop launcher and the Android app: data folder, teacher PIN, start/stop server, address cleanup."""
 import os, sys, threading, importlib
+import license_check
 
 if sys.stdout is None: sys.stdout = open(os.devnull, "w")
 if sys.stderr is None: sys.stderr = open(os.devnull, "w")
@@ -20,7 +21,10 @@ def default_data_dir():
 
 
 def load_server(data_dir=None):
-    """Import the server module (once). It reads NUMERACY_DATA at import time."""
+    """Import the server module (once). It reads NUMERACY_DATA at import time.
+    Refuses (LicenseError) on a computer that is not on the approved list, same rule as GNHS Quiz."""
+    os.environ["NUMERACY_DATA"] = data_dir or default_data_dir()
+    license_check.require()
     os.environ["NUMERACY_DATA"] = data_dir or default_data_dir()
     os.makedirs(os.environ["NUMERACY_DATA"], exist_ok=True)
     if "numeracy_server" in sys.modules:
@@ -48,6 +52,7 @@ class Host:
     """Runs the drill server in a background thread."""
 
     def __init__(self, srv, port=DEFAULT_PORT, ips_func=None):
+        license_check.require()                    # second check point: no server on an unapproved computer
         self.srv = srv
         self.ips_func = ips_func
         self.httpd = None

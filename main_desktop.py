@@ -1,5 +1,6 @@
 """Guadalupe NHS Numeracy Drill: desktop app (Windows + Mac).
-Opens a start screen: TEACHER (PIN, runs the drill for the class) or STUDENT (joins the teacher automatically)."""
+Two separate apps are built from this one source (see app_role.py): the TEACHER app (license lock + PIN, runs the drill)
+and the STUDENT app (joins the teacher automatically). Each app shows only its own screen."""
 import sys
 if "--webview" in sys.argv:
     # Child mode: show one page in a native app window (WebKit on Mac, Edge WebView2 on Windows), then exit.
@@ -27,6 +28,13 @@ from PIL import Image, ImageTk
 
 import app_core as core
 import app_updater
+import license_check as lic
+
+try:
+    from app_role import ROLE            # written by the build: "teacher" or "student"
+except Exception:
+    ROLE = "teacher"
+IS_STUDENT = (ROLE == "student")
 
 try:
     from logo_data import LOGO_B64
@@ -40,6 +48,7 @@ BG, BLUE, INK, MUTED, RED, GREEN, PURPLE = "#e4f1ff", "#2f6df6", "#12306b", "#5f
 GREEN_D, GREEN_L, WARN, CARD = "#2e7d32", "#66bb6a", "#ef6c00", "#f0f9f2"
 CHECKING_TITLE = "paabot kadali....mangita tag update..."
 UPTODATE_TITLE = "Okie pa ag version. Updated pa ne. Padajun gamit"
+LICENSE_EVERY_MS, REVOKED_MS = 60 * 60 * 1000, 8000      # re-check the approved list every hour; "License removed" popup time
 UP_TO_DATE_MS, NOTICE_MS, SEARCH_MS = 5000, 4000, 10000   # 'up to date' shows 5 s; the searching popup shows at least 10 s
 
 
@@ -381,7 +390,7 @@ def sweep_subnet(timeout=0.3):
 class App:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("%s - %s" % (core.SCHOOL, core.APP_NAME))
+        self.root.title("%s - %s (%s)" % (core.SCHOOL, core.APP_NAME, "Student" if IS_STUDENT else "Teacher"))
         self.root.configure(bg=BG)
         self.root.resizable(False, False)
         self.srv = None
@@ -389,6 +398,8 @@ class App:
         self.pages = []
         self.logo_small = None
         self._scan_token = None      # identifies the student screen that is currently searching
+        self._lic_token = None
+        self._lic_timer = None
         self.popup = Popup(self.root)
         if LOGO_PNG:
             try:
@@ -403,6 +414,8 @@ class App:
         self.home()
         self.center_root()                            # open in the middle of the screen
         self.root.after(700, self.update_flow)       # update popup every time the app opens
+        if not IS_STUDENT:
+            threading.Thread(target=lic.refresh_allowlist, daemon=True).start()   # newest approved list, quietly
         self.root.mainloop()
 
     # ---------- updates
@@ -531,7 +544,7 @@ class App:
                 pass
             try:
                 self.root.deiconify()                 # drill closed: bring the start window back
-                self.home()
+                self.student_screen(auto=False)
                 self.center_root()
             except tk.TclError:
                 pass
@@ -551,6 +564,7 @@ class App:
     def clear(self):
         self.root.after_idle(self.center_root)     # keep the window centered when the screen changes size
         self._scan_token = None      # leaving a screen stops any search that was running on it
+        self._lic_token = None       # ...and any approval re-check
         if self.body is not None:
             self.body.destroy()
         self.body = tk.Frame(self.root, bg=BG)
@@ -590,21 +604,21 @@ class App:
 
     # ---------- screens
     def home(self):
-        b = self.clear()
-        self.label(b, "Who is using this app?", 17, INK, True).pack(pady=(18, 12))
-        self.button(b, "I am the TEACHER (PIN)", BLUE, self.teacher_screen).pack(pady=6)
-        self.button(b, "I am a STUDENT", GREEN, self.student_screen).pack(pady=6)
-        self.label(b, "Teacher: runs the drill for the class.\nStudent: joins the teacher's drill automatically.", 11, MUTED).pack(pady=(14, 4))
-        self.label(b, "Version %s" % app_updater.VERSION, 10, MUTED).pack(pady=(6, 0))
+        """This app has ONE screen: the student app opens the student screen, the teacher app the teacher (license + PIN) screen."""
+        if IS_STUDENT:
+            self.student_screen()
+        else:
+            self.teacher_screen()
 
-    def student_screen(self):
+    def student_screen(self, auto=True):
+        """auto=False (after the drill window was closed): do not rejoin by itself, wait for Search again."""
         b = self.clear()
         token = object()
         self._scan_token = token
         state = {"joined": False}
 
         self.label(b, "Join the teacher's drill", 17, INK, True).pack(pady=(16, 4))
-        status = self.label(b, "Looking for your teacher...", 12, MUTED)
+        status = self.label(b, "Looking for your teacher..." if auto else "Press Search again to join your teacher's drill.", 12, MUTED)
         status.pack()
         found = tk.Frame(b, bg=BG)
         found.pack(pady=6)
@@ -683,10 +697,100 @@ class App:
             join_url(url)
         e.bind("<Return>", join)
         self.button(b, "Join", GREEN, join, width=16).pack(pady=6)
-        self.button(b, "Back", MUTED, self.home, width=10).pack(pady=(2, 4))
-        scan()
+        self.label(b, "Version %s" % app_updater.VERSION, 10, MUTED).pack(pady=(8, 0))
+        if auto:
+            scan()
 
+    # ---------- license (same approved-computers list as GNHS Quiz)
     def teacher_screen(self):
+        """The teacher app only runs on approved computers (the student app has no lock)."""
+        if lic.is_allowed():
+            self._teacher_pin_screen()
+        else:
+            self.license_recheck()
+
+    def license_recheck(self):
+        """Not on the list? Download the newest list (Julius may have just approved this computer) and look again."""
+        b = self.clear()
+        self.label(b, "Checking if this computer is approved...", 13, MUTED).pack(pady=30)
+        token = object()
+        self._lic_token = token
+
+        def work():
+            try:
+                lic.refresh_allowlist()
+            except Exception:
+                pass
+            try:
+                self.root.after(0, lambda: done() if self._lic_token is token else None)
+            except Exception:
+                pass
+
+        def done():
+            if lic.is_allowed():
+                self._teacher_pin_screen()
+            else:
+                self.locked_screen()
+        threading.Thread(target=work, daemon=True).start()
+
+    def locked_screen(self):
+        ok, reason = lic.check()
+        mid = lic.get_machine_id()
+        b = self.clear()
+        self.label(b, "\U0001F512  Not approved", 17, RED, True).pack(pady=(14, 2))
+        self.label(b, reason, 11, MUTED).pack()
+        self.label(b, "Send this computer's ID to %s\nto get it approved for this app:" % lic.CONTACT, 11, MUTED).pack(pady=(10, 4))
+        idbox = tk.Frame(b, bg="white", highlightbackground=RED, highlightcolor=RED, highlightthickness=2)
+        idbox.pack(pady=4)
+        tk.Label(idbox, text=mid, font=("Courier", 15, "bold"), fg=INK, bg="white", padx=14, pady=8).pack()
+        note = self.label(b, "", 10, GREEN)
+
+        def copy():
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(mid)
+                self.root.update()
+                note.config(text="Copied!")
+            except Exception:
+                note.config(text="Select the ID and copy it by hand.")
+        self.button(b, "Copy ID", PURPLE, copy, width=18).pack(pady=(8, 2))
+        note.pack()
+        self.button(b, "Check again", BLUE, self.license_recheck, width=18).pack(pady=(6, 2))
+        self.button(b, "Close", MUTED, lambda: self.quit(force=True), width=18).pack(pady=(2, 4))
+
+    def _license_tick(self):
+        """Hourly while the drill runs: refresh the list; if this computer was removed, save and close."""
+        if self.host is None:
+            return
+
+        def work():
+            try:
+                lic.refresh_allowlist()
+            except Exception:
+                pass
+            try:
+                self.root.after(0, after)
+            except Exception:
+                pass
+
+        def after():
+            if self.host is None:
+                return
+            if lic.is_allowed():
+                self._lic_timer = self.root.after(LICENSE_EVERY_MS, self._license_tick)
+                return
+            try:
+                self.host.stop()                       # saves the data first
+            except Exception:
+                pass
+            self.popup.show("License removed",
+                            "This computer is no longer approved to run GNHS Numeracy Drill. Your data was saved. Contact %s." % lic.CONTACT,
+                            icon="alert", auto_ms=REVOKED_MS)
+            self.host = None
+            self.root.after(REVOKED_MS, lambda: self.quit(force=True))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _teacher_pin_screen(self):
         b = self.clear()
         self.label(b, "Loading...", 14, MUTED).pack(pady=30)
         self.root.update()
@@ -694,6 +798,9 @@ class App:
             if self.srv is None:
                 self.srv = core.load_server()
             first = not core.has_saved_pin(self.srv)
+        except lic.LicenseError:
+            self.locked_screen()
+            return
         except Exception as ex:
             messagebox.showerror(core.APP_NAME, "Could not start the drill:\n%s" % ex)
             self.home()
@@ -732,7 +839,7 @@ class App:
         if e2 is not None:
             e2.bind("<Return>", go)
         self.button(b, "Start", BLUE, go).pack(pady=8)
-        self.button(b, "Back", MUTED, self.home, width=10).pack(pady=(2, 4))
+        self.label(b, "Version %s" % app_updater.VERSION, 10, MUTED).pack(pady=(8, 0))
 
     def start_host(self):
         try:
@@ -741,6 +848,7 @@ class App:
             messagebox.showerror(core.APP_NAME, "Could not start the server:\n%s" % ex)
             self.home()
             return
+        self._lic_timer = self.root.after(LICENSE_EVERY_MS, self._license_tick)
         b = self.clear()
         urls = self.host.join_urls()
         self.label(b, "Drill is running", 17, GREEN, True).pack(pady=(14, 0))

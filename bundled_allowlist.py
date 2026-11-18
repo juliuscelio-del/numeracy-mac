@@ -1,0 +1,13 @@
+"""Signed list of approved computers (same list as GNHS Quiz). Made by update_allowlist.py - do not edit by hand."""
+ALLOWLIST = {
+  "issuedAt": "2026-11-18T03:57:43.081Z",
+  "machines": [
+    {
+      "id": "349aae95b8fff03a7234418b"
+    },
+    {
+      "id": "c85f0e0821fa61c400646b36"
+    }
+  ],
+  "sig": "OIBsNWoPFW9ZP2ngx8/xS8GUo+6UFHTTZIZdZ64z2jqplZ8KK92SXMpwRvfyFdr0Irq6xEzBVMYMsg/X3f3uBA=="
+}
