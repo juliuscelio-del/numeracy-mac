@@ -1,4 +1,4 @@
-name: Build Mac + Windows
+name: Build Teacher + Student (Mac + Windows)
 
 on:
   workflow_dispatch:
@@ -14,8 +14,14 @@ env:
 
 jobs:
   windows:
-    name: Windows exe
+    name: Windows ${{ matrix.Name }} exe
     runs-on: windows-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { role: teacher, Name: Teacher }
+          - { role: student, Name: Student }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,32 +29,50 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: python -m pip install pillow qrcode pyinstaller pywebview certifi
-      - name: Stamp version into the app
+      - name: Refresh the approved-computers list (teacher app only)
+        if: matrix.role == 'teacher'
+        continue-on-error: true
+        run: python update_allowlist.py
+      - name: Stamp version and app type into the app
         shell: bash
-        run: echo "VERSION = \"$VERSION\"" > app_version.py
+        run: |
+          echo "VERSION = \"$VERSION\"" > app_version.py
+          echo "ROLE = \"${{ matrix.role }}\"" > app_role.py
       - name: Make Windows icon from icon.png
         shell: bash
         run: |
           python -c "from PIL import Image; Image.open('icon.png').convert('RGBA').save('icon.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
       - name: Build exe
-        run: >
-          python -m PyInstaller --noconfirm --windowed --onefile
-          --name "GNHS Numeracy Drill" --icon icon.ico main_desktop.py
-          --hidden-import numeracy_server --hidden-import logo_data
-          --hidden-import app_core --hidden-import webview
-          --hidden-import app_updater --hidden-import app_version --hidden-import certifi
+        shell: bash
+        run: |
+          if [ "${{ matrix.role }}" = "teacher" ]; then
+            EXTRA="--hidden-import numeracy_server --hidden-import license_check --hidden-import bundled_allowlist"
+          else
+            EXTRA="--exclude-module numeracy_server --exclude-module bundled_allowlist"
+          fi
+          python -m PyInstaller --noconfirm --windowed --onefile \
+            --name "GNHS Numeracy ${{ matrix.Name }}" --icon icon.ico main_desktop.py \
+            --hidden-import logo_data --hidden-import app_core --hidden-import webview \
+            --hidden-import app_updater --hidden-import app_version --hidden-import app_role \
+            --hidden-import certifi $EXTRA
       - name: Name the file
         shell: bash
-        run: cp "dist/GNHS Numeracy Drill.exe" GNHS-Numeracy-Drill.exe
+        run: cp "dist/GNHS Numeracy ${{ matrix.Name }}.exe" "GNHS-Numeracy-${{ matrix.Name }}.exe"
       - uses: actions/upload-artifact@v4
         with:
-          name: GNHS-Numeracy-Windows
-          path: GNHS-Numeracy-Drill.exe
+          name: GNHS-Numeracy-${{ matrix.Name }}-Windows
+          path: GNHS-Numeracy-${{ matrix.Name }}.exe
           if-no-files-found: error
 
   mac:
-    name: Mac app (.dmg)
+    name: Mac ${{ matrix.Name }} app (.dmg)
     runs-on: macos-15
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { role: teacher, Name: Teacher }
+          - { role: student, Name: Student }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -56,30 +80,41 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pillow
-      - name: Stamp version into the app
-        run: echo "VERSION = \"$VERSION\"" > app_version.py
+      - name: Refresh the approved-computers list (teacher app only)
+        if: matrix.role == 'teacher'
+        continue-on-error: true
+        run: python update_allowlist.py
+      - name: Stamp version and app type into the app
+        run: |
+          echo "VERSION = \"$VERSION\"" > app_version.py
+          echo "ROLE = \"${{ matrix.role }}\"" > app_role.py
       - name: Make Mac icon from icon.png
         run: |
           python -c "from PIL import Image; Image.open('icon.png').convert('RGBA').resize((512,512), Image.LANCZOS).save('icon.icns')"
       - name: Build app
-        run: >
-          python -m PyInstaller --noconfirm --windowed
-          --name "GNHS Numeracy Drill" --icon icon.icns main_desktop.py
-          --osx-bundle-identifier ph.gnhs.numeracy
-          --hidden-import numeracy_server --hidden-import logo_data
-          --hidden-import app_core --hidden-import webview
-          --hidden-import app_updater --hidden-import app_version --hidden-import certifi
+        run: |
+          if [ "${{ matrix.role }}" = "teacher" ]; then
+            EXTRA="--hidden-import numeracy_server --hidden-import license_check --hidden-import bundled_allowlist"
+          else
+            EXTRA="--exclude-module numeracy_server --exclude-module bundled_allowlist"
+          fi
+          python -m PyInstaller --noconfirm --windowed \
+            --name "GNHS Numeracy ${{ matrix.Name }}" --icon icon.icns main_desktop.py \
+            --osx-bundle-identifier ph.gnhs.numeracy.${{ matrix.role }} \
+            --hidden-import logo_data --hidden-import app_core --hidden-import webview \
+            --hidden-import app_updater --hidden-import app_version --hidden-import app_role \
+            --hidden-import certifi $EXTRA
       - name: Package as .dmg
         run: |
-          codesign --force --deep -s - "dist/GNHS Numeracy Drill.app"
+          codesign --force --deep -s - "dist/GNHS Numeracy ${{ matrix.Name }}.app"
           mkdir -p out
-          cp -R "dist/GNHS Numeracy Drill.app" out/
+          cp -R "dist/GNHS Numeracy ${{ matrix.Name }}.app" out/
           ln -s /Applications out/Applications
-          hdiutil create -volname "GNHS Numeracy Drill" -srcfolder out -ov -format UDZO GNHS-Numeracy-Drill-Mac.dmg
+          hdiutil create -volname "GNHS Numeracy ${{ matrix.Name }}" -srcfolder out -ov -format UDZO "GNHS-Numeracy-${{ matrix.Name }}-Mac.dmg"
       - uses: actions/upload-artifact@v4
         with:
-          name: GNHS-Numeracy-Mac
-          path: GNHS-Numeracy-Drill-Mac.dmg
+          name: GNHS-Numeracy-${{ matrix.Name }}-Mac
+          path: GNHS-Numeracy-${{ matrix.Name }}-Mac.dmg
           if-no-files-found: error
 
   release:
@@ -91,10 +126,8 @@ jobs:
         with:
           path: files
           merge-multiple: true
-      # One release per build (v1.1.N). The apps read the newest one to find updates.
-      # Stable download links keep working:
-      #   .../releases/latest/download/GNHS-Numeracy-Drill.exe
-      #   .../releases/latest/download/GNHS-Numeracy-Drill-Mac.dmg
+      # One release per build (v1.1.N) holding all four files. Each app reads the newest release and
+      # downloads ONLY its own file, so the teacher app and the student app update separately.
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -102,5 +135,5 @@ jobs:
         run: |
           gh release create "v$VERSION" files/* --repo "$REPO" \
             --title "GNHS Numeracy Drill v$VERSION" \
-            --notes "Windows: GNHS-Numeracy-Drill.exe  |  Mac: GNHS-Numeracy-Drill-Mac.dmg" \
-            --latest------------this is the build yml i used
+            --notes "Teacher: GNHS-Numeracy-Teacher.exe | GNHS-Numeracy-Teacher-Mac.dmg   Student: GNHS-Numeracy-Student.exe | GNHS-Numeracy-Student-Mac.dmg" \
+            --latest
